@@ -1,0 +1,81 @@
+<form class="form-horizontal form-complex">
+
+  <div class="control-group">
+    <label class="control-label" for="harness_url">Harness URL</label>
+    <div class="controls">
+      <input type="text" name="action.soc_harness.param.harness_url"
+             id="harness_url" placeholder="http://10.90.1.40:8080/v1/alert" />
+      <span class="help-block">
+        Full URL of the SPARKSOC harness ingestion endpoint. Must end in
+        <code>/v1/alert</code>.
+      </span>
+    </div>
+  </div>
+
+  <div class="control-group">
+    <label class="control-label" for="shared_secret">Shared secret</label>
+    <div class="controls">
+      <input type="password" name="action.soc_harness.param.shared_secret"
+             id="shared_secret" />
+      <span class="help-block">
+        Must match <code>SPLUNK_HMAC_SECRET</code> on the harness (the contents of
+        <code>harness/secrets/splunk_hmac_secret</code>). A mismatch produces
+        HTTP 401 on every delivery.
+      </span>
+    </div>
+  </div>
+
+  <div class="control-group">
+    <label class="control-label" for="verify_tls">Verify TLS</label>
+    <div class="controls">
+      <select name="action.soc_harness.param.verify_tls" id="verify_tls">
+        <option value="1">Yes (recommended)</option>
+        <option value="0">No</option>
+      </select>
+      <span class="help-block">Only relevant when the harness URL is https.</span>
+    </div>
+  </div>
+
+  <div class="control-group">
+    <label class="control-label" for="ca_bundle">CA bundle path</label>
+    <div class="controls">
+      <input type="text" name="action.soc_harness.param.ca_bundle" id="ca_bundle"
+             placeholder="/opt/splunk/etc/auth/sparksoc-ca.pem" />
+      <span class="help-block">Optional. Path on the search head to the CA that signed the harness certificate.</span>
+    </div>
+  </div>
+
+  <div class="control-group">
+    <label class="control-label" for="timeout">Timeout (seconds)</label>
+    <div class="controls">
+      <input type="text" name="action.soc_harness.param.timeout" id="timeout" placeholder="30" />
+    </div>
+  </div>
+
+  <div class="control-group">
+    <label class="control-label" for="severity">Severity hint</label>
+    <div class="controls">
+      <select name="action.soc_harness.param.severity" id="severity">
+        <option value="">(let the model decide)</option>
+        <option value="low">low</option>
+        <option value="medium">medium</option>
+        <option value="high">high</option>
+        <option value="critical">critical</option>
+      </select>
+      <span class="help-block">
+        Passed to the pipeline as context. It does not override the model's
+        assessment; it is one more input.
+      </span>
+    </div>
+  </div>
+
+  <div class="control-group">
+    <label class="control-label" for="labels">Labels</label>
+    <div class="controls">
+      <input type="text" name="action.soc_harness.param.labels" id="labels"
+             placeholder="range,windows,detection-engineering" />
+      <span class="help-block">Comma-separated. Propagated to the SOAR container tags.</span>
+    </div>
+  </div>
+
+</form>

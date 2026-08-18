@@ -1,0 +1,24 @@
+# SPARKSOC validation configuration. Copy to config.yaml.
+harness:
+  url: http://10.90.1.40:8080
+  # Must equal the contents of harness/secrets/splunk_hmac_secret
+  hmac_secret: REPLACE_WITH_SPLUNK_HMAC_SECRET
+
+verify_tls: true
+case_timeout_seconds: 300
+
+# Direct node probes. Omit a node to skip its checks.
+nodes:
+  triage:
+    url: http://10.90.1.11:8001/v1
+    model: soc-triage
+    api_key: REPLACE_WITH_SPARK1_API_KEY
+  reason:
+    url: http://10.90.1.12:8003/v1
+    model: soc-reason
+    api_key: REPLACE_WITH_SPARK2_API_KEY
+
+qdrant:
+  url: http://10.90.1.11:6333
+  collection: attack_enterprise
+  api_key: REPLACE_WITH_QDRANT_API_KEY

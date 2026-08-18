@@ -1,0 +1,27 @@
+# Qdrant production config for SPARKSOC.
+# Mounted read-only at /qdrant/config/production.yaml
+log_level: INFO
+
+service:
+  host: 0.0.0.0
+  http_port: 6333
+  grpc_port: 6334
+  # api_key is injected via QDRANT__SERVICE__API_KEY, not stored here
+  enable_cors: false
+  max_request_size_mb: 64
+
+storage:
+  storage_path: /qdrant/storage
+  on_disk_payload: false          # ATT&CK corpus is small; keep payloads in RAM
+  performance:
+    max_search_threads: 4         # leave Grace cores for the harness and vLLM
+  optimizers:
+    default_segment_number: 2
+    memmap_threshold_kb: 0        # disable memmap; corpus fits comfortably
+  hnsw_index:
+    m: 32
+    ef_construct: 256
+    full_scan_threshold_kb: 10000
+    on_disk: false
+
+telemetry_disabled: true

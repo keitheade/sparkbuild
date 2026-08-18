@@ -1,0 +1,7 @@
+[]
+access = read : [ * ], write : [ admin, power ]
+export = system
+
+[alert_actions/soc_harness]
+access = read : [ * ], write : [ admin ]
+export = system

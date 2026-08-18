@@ -1,0 +1,21 @@
+[Unit]
+Description=SPARKSOC agent harness
+Documentation=file:///opt/sparksoc/code/docs/04-HARNESS-DEPLOY.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/sparksoc/code/harness
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+ExecStop=/usr/bin/docker compose stop
+ExecReload=/usr/bin/docker compose up -d --force-recreate
+
+TimeoutStartSec=300
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

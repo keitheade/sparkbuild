@@ -1,0 +1,24 @@
+{
+  "search_name": "SPARKSOC - Credential Dumping Indicators",
+  "sid": "validate_lsass_001",
+  "result_count": 1,
+  "trigger_time": 0,
+  "severity": "critical",
+  "results": [
+    {
+      "_time": "2026-08-18T09:22:44.002Z",
+      "host": "WS2022-RANGE-02",
+      "User": "CORP\\Administrator",
+      "SourceImage": "C:\\Users\\Public\\tools\\pd64.exe",
+      "TargetImage": "C:\\Windows\\system32\\lsass.exe",
+      "GrantedAccess": "0x1410",
+      "CallTrace": "C:\\Windows\\SYSTEM32\\ntdll.dll+9d234|C:\\Windows\\System32\\KERNELBASE.dll+3b1ef|UNKNOWN(00007FFB2C1E0000)",
+      "SourceProcessGuid": "{a1b2c3d4-2233-6532-2f00-000000002a00}"
+    }
+  ],
+  "_expect": {
+    "disposition": ["suspicious", "malicious"],
+    "techniques": ["T1003.001", "T1003"],
+    "max_fast_ms": 15000
+  }
+}

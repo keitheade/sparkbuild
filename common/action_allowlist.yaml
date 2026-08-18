@@ -1,0 +1,381 @@
+# =============================================================================
+# SPARKSOC — SOAR action allowlist
+#
+# This file is the security boundary between model output and the range.
+#
+# The model NEVER names a SOAR action, an asset, or a command. It selects an
+# `id` from the enum below (the enum is generated from this file at runtime and
+# injected into the JSON schema that constrains decoding) and supplies only the
+# declared parameters, each of which is regex-validated.
+#
+# Consequence: a prompt-injection payload buried in a log field cannot cause an
+# action that is not listed here, cannot target a host outside range_cidrs, and
+# cannot reach a CONTAIN-tier action without a human clicking approve.
+#
+# Tiers
+#   COLLECT   read-only evidence gathering. Dispatched automatically.
+#   CONTAIN   changes state on a target. Creates an approval task; never
+#             auto-dispatched, regardless of model confidence.
+#   DENY      present so the model has a vocabulary for what it wants, and so
+#             the attempt is auditable, but never executable from this pipeline.
+# =============================================================================
+
+version: 3
+updated: "2026-08-18"
+
+# -----------------------------------------------------------------------------
+# Scope guard. Every action target is checked against these before dispatch.
+# An action whose target falls outside is rejected and audited, even if the
+# action itself is COLLECT tier and the asset is valid.
+# -----------------------------------------------------------------------------
+scope:
+  range_cidrs:
+    - "10.90.10.0/24"     # ESXi range — Windows Server 2022
+    - "10.90.11.0/24"     # ESXi range — Windows 11 workstations
+    - "10.90.12.0/24"     # ESXi range — RHEL targets
+  # Hosts that must never be targeted even if they fall inside a range CIDR.
+  never_target:
+    - "10.90.10.1"        # range gateway
+    - "10.90.10.5"        # range domain controller — collect only, see below
+  # Hostname patterns permitted as targets, anchored.
+  hostname_pattern: "^(WS2022|WIN11|RHEL)-RANGE-[0-9]{2}$"
+
+# -----------------------------------------------------------------------------
+# SOAR assets. `name` must match the asset name configured in SOAR exactly.
+# See docs/06-SOAR-INTEGRATION.md for creating these.
+# -----------------------------------------------------------------------------
+assets:
+  winrm_range:
+    soar_asset: "range_winrm"
+    app: "Windows Remote Management"
+    platforms: ["windows"]
+    description: "WinRM/PowerShell into range Windows hosts, scoped service account"
+  ssh_range:
+    soar_asset: "range_ssh"
+    app: "SSH"
+    platforms: ["linux"]
+    description: "SSH into range RHEL hosts, scoped service account"
+  splunk_search:
+    soar_asset: "splunk_enterprise"
+    app: "Splunk"
+    platforms: ["any"]
+    description: "Run saved searches for historical correlation"
+
+# -----------------------------------------------------------------------------
+# Parameter validators, referenced by name from action definitions.
+# Applied BEFORE the value reaches SOAR. A value that fails is not sanitised —
+# the whole action is rejected. Sanitising attacker-influenced input is how
+# injection bugs are born.
+# -----------------------------------------------------------------------------
+validators:
+  hostname:
+    pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{1,62}$"
+    max_length: 63
+  ip:
+    pattern: "^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$"
+  pid:
+    pattern: "^[0-9]{1,7}$"
+  username:
+    pattern: "^[A-Za-z0-9._\\\\-]{1,104}$"
+  windows_path:
+    pattern: "^[A-Za-z]:\\\\[^<>|\\r\\n\\x00]{0,240}$"
+    max_length: 250
+  posix_path:
+    pattern: "^/[A-Za-z0-9._/\\-]{0,240}$"
+    max_length: 250
+  sha256:
+    pattern: "^[A-Fa-f0-9]{64}$"
+  event_log_name:
+    enum: ["Security", "System", "Application",
+           "Microsoft-Windows-Sysmon/Operational",
+           "Microsoft-Windows-PowerShell/Operational",
+           "Microsoft-Windows-WinRM/Operational",
+           "Microsoft-Windows-TaskScheduler/Operational"]
+  time_window_minutes:
+    pattern: "^[0-9]{1,4}$"
+    max_int: 1440
+  registry_hive_path:
+    pattern: "^HK(LM|CU|U|CR|CC)\\\\[A-Za-z0-9\\\\ _.-]{1,200}$"
+
+# =============================================================================
+# ACTIONS
+# =============================================================================
+actions:
+
+  # ---------------------------------------------------------------------------
+  # COLLECT — auto-dispatched
+  # ---------------------------------------------------------------------------
+
+  - id: collect_process_list
+    tier: COLLECT
+    asset: winrm_range
+    soar_action: "list processes"
+    description: "Enumerate running processes with command line, parent PID and owner."
+    when: "You need to know what is executing right now on the host."
+    parameters:
+      ip_hostname: { validator: hostname, required: true, from: target_host }
+    evidence_value: high
+
+  - id: collect_process_tree
+    tier: COLLECT
+    asset: winrm_range
+    soar_action: "run script"
+    script_ref: "Get-ProcessTree"     # see docs/06-SOAR-INTEGRATION.md appendix
+    description: "Full ancestry for a specific PID — parent chain, command lines, signatures."
+    when: "Triage identified a suspicious process and the parent chain determines the verdict."
+    parameters:
+      ip_hostname: { validator: hostname, required: true, from: target_host }
+      pid:         { validator: pid, required: true }
+    evidence_value: critical
+
+  - id: collect_event_log
+    tier: COLLECT
+    asset: winrm_range
+    soar_action: "get system logs"
+    description: "Pull a bounded slice of a Windows event log."
+    when: "You need corroborating events around the alert timestamp."
+    parameters:
+      ip_hostname:  { validator: hostname, required: true, from: target_host }
+      log_name:     { validator: event_log_name, required: true }
+      window_minutes: { validator: time_window_minutes, required: true, default: "30" }
+    evidence_value: high
+
+  - id: collect_network_connections
+    tier: COLLECT
+    asset: winrm_range
+    soar_action: "list connections"
+    description: "Active TCP/UDP connections with owning process."
+    when: "Testing a C2 or lateral-movement hypothesis."
+    parameters:
+      ip_hostname: { validator: hostname, required: true, from: target_host }
+    evidence_value: high
+
+  - id: collect_scheduled_tasks
+    tier: COLLECT
+    asset: winrm_range
+    soar_action: "run script"
+    script_ref: "Get-PersistenceArtifacts"
+    description: "Scheduled tasks, Run keys, services, WMI subscriptions, startup folder."
+    when: "Testing a persistence hypothesis (T1053, T1547, T1546)."
+    parameters:
+      ip_hostname: { validator: hostname, required: true, from: target_host }
+    evidence_value: critical
+
+  - id: collect_file_metadata
+    tier: COLLECT
+    asset: winrm_range
+    soar_action: "get file info"
+    description: "Hash, signature status, timestamps and version info for one file. Does not exfiltrate content."
+    when: "A specific binary or script needs identification."
+    parameters:
+      ip_hostname: { validator: hostname, required: true, from: target_host }
+      file_path:   { validator: windows_path, required: true }
+    evidence_value: high
+
+  - id: collect_registry_key
+    tier: COLLECT
+    asset: winrm_range
+    soar_action: "get registry key"
+    description: "Read one registry key and its values."
+    when: "Testing a registry-based persistence or defence-evasion hypothesis."
+    parameters:
+      ip_hostname: { validator: hostname, required: true, from: target_host }
+      key_path:    { validator: registry_hive_path, required: true }
+    evidence_value: medium
+
+  - id: collect_local_users
+    tier: COLLECT
+    asset: winrm_range
+    soar_action: "list users"
+    description: "Local accounts and group membership."
+    when: "Testing account-creation or privilege-escalation hypotheses (T1136, T1098)."
+    parameters:
+      ip_hostname: { validator: hostname, required: true, from: target_host }
+    evidence_value: medium
+
+  - id: collect_linux_processes
+    tier: COLLECT
+    asset: ssh_range
+    soar_action: "execute program"
+    command_ref: "ps -eo pid,ppid,user,lstart,cmd --sort=start_time"
+    description: "Process listing on a RHEL range target."
+    when: "The alert host is Linux."
+    parameters:
+      ip_hostname: { validator: hostname, required: true, from: target_host }
+    evidence_value: high
+
+  - id: collect_linux_persistence
+    tier: COLLECT
+    asset: ssh_range
+    soar_action: "execute program"
+    command_ref: "GetLinuxPersistence"
+    description: "cron, systemd units, rc.local, authorized_keys, shell profiles."
+    when: "Testing Linux persistence hypotheses (T1053.003, T1543.002, T1098.004)."
+    parameters:
+      ip_hostname: { validator: hostname, required: true, from: target_host }
+    evidence_value: critical
+
+  - id: collect_linux_connections
+    tier: COLLECT
+    asset: ssh_range
+    soar_action: "execute program"
+    command_ref: "ss -tunap"
+    description: "Active sockets with owning process on a RHEL target."
+    when: "Testing C2 or lateral movement on Linux."
+    parameters:
+      ip_hostname: { validator: hostname, required: true, from: target_host }
+    evidence_value: high
+
+  - id: correlate_splunk_history
+    tier: COLLECT
+    asset: splunk_search
+    soar_action: "run query"
+    description: "Run a pre-registered saved search for historical context. The model chooses the saved search by name from the enum; it cannot compose SPL."
+    when: "You need to know whether this behaviour is new or routine for this host."
+    parameters:
+      saved_search:
+        # Deliberately an enum. Letting a model compose SPL against a
+        # production Splunk instance is a remote code execution surface.
+        enum:
+          - "SPARKSOC - Host Baseline - Process Frequency"
+          - "SPARKSOC - Host Baseline - Logon Patterns"
+          - "SPARKSOC - Host Baseline - Outbound Destinations"
+          - "SPARKSOC - Related Alerts By Host 24h"
+          - "SPARKSOC - Related Alerts By User 24h"
+        required: true
+      target_host: { validator: hostname, required: true, from: target_host }
+      window_minutes: { validator: time_window_minutes, required: true, default: "1440" }
+    evidence_value: high
+
+  # ---------------------------------------------------------------------------
+  # CONTAIN — approval gated. Never auto-dispatched.
+  # ---------------------------------------------------------------------------
+
+  - id: contain_isolate_host
+    tier: CONTAIN
+    asset: winrm_range
+    soar_action: "block ip"
+    description: "Apply a host firewall rule isolating the target from all but the management subnet."
+    when: "Confirmed active compromise with lateral movement in progress."
+    approval:
+      prompt: "Isolate {target_host} from the range network?"
+      # In a purple-team exercise, isolating a host ends the exercise for that
+      # host. Reviewer must confirm that is intended.
+      warning: "This will terminate the purple-team exercise on this host."
+      roles: ["soc_lead", "exercise_director"]
+    parameters:
+      ip_hostname: { validator: hostname, required: true, from: target_host }
+    evidence_value: n/a
+
+  - id: contain_kill_process
+    tier: CONTAIN
+    asset: winrm_range
+    soar_action: "terminate process"
+    description: "Terminate a specific PID."
+    when: "A confirmed malicious process is actively executing."
+    approval:
+      prompt: "Terminate PID {pid} on {target_host}?"
+      warning: "Destroys volatile evidence. Collect a process tree and memory artifacts first."
+      roles: ["soc_lead", "exercise_director"]
+    parameters:
+      ip_hostname: { validator: hostname, required: true, from: target_host }
+      pid:         { validator: pid, required: true }
+
+  - id: contain_disable_account
+    tier: CONTAIN
+    asset: winrm_range
+    soar_action: "disable user"
+    description: "Disable a local or domain account."
+    when: "Confirmed credential compromise."
+    approval:
+      prompt: "Disable account {username}?"
+      warning: "Domain accounts affect every host. Verify the account is range-scoped."
+      roles: ["soc_lead", "exercise_director", "identity_admin"]
+    parameters:
+      ip_hostname: { validator: hostname, required: true, from: target_host }
+      username:    { validator: username, required: true }
+
+  - id: contain_quarantine_file
+    tier: CONTAIN
+    asset: winrm_range
+    soar_action: "quarantine device"
+    description: "Move a file to a quarantine path and revoke execute permission."
+    when: "A confirmed malicious artifact is on disk."
+    approval:
+      prompt: "Quarantine {file_path} on {target_host}?"
+      warning: "Hash and collect metadata first — quarantine may alter timestamps."
+      roles: ["soc_lead"]
+    parameters:
+      ip_hostname: { validator: hostname, required: true, from: target_host }
+      file_path:   { validator: windows_path, required: true }
+
+  - id: contain_linux_kill_process
+    tier: CONTAIN
+    asset: ssh_range
+    soar_action: "execute program"
+    command_ref: "KillProcess"
+    description: "Terminate a PID on a RHEL target."
+    when: "Confirmed malicious process on Linux."
+    approval:
+      prompt: "Kill PID {pid} on {target_host}?"
+      warning: "Destroys volatile evidence."
+      roles: ["soc_lead", "exercise_director"]
+    parameters:
+      ip_hostname: { validator: hostname, required: true, from: target_host }
+      pid:         { validator: pid, required: true }
+
+  # ---------------------------------------------------------------------------
+  # DENY — the model may propose these; they are recorded and never executed.
+  # Keeping them in the vocabulary means an injection attempt that reaches for
+  # one is visible in the audit log instead of failing as an unparseable action.
+  # ---------------------------------------------------------------------------
+
+  - id: deny_reimage_host
+    tier: DENY
+    description: "Reimage or restore a host from snapshot."
+    reason: "Out of scope for an automated pipeline. Range rebuild is an exercise-director decision made outside this system."
+
+  - id: deny_delete_files
+    tier: DENY
+    description: "Delete files from a target."
+    reason: "Irreversible destruction of evidence. Quarantine is the supported alternative."
+
+  - id: deny_modify_firewall_global
+    tier: DENY
+    description: "Modify perimeter or enclave firewall rules."
+    reason: "Blast radius extends beyond the range. Not reachable from this pipeline under any confidence."
+
+  - id: deny_password_reset
+    tier: DENY
+    description: "Reset a user's password."
+    reason: "Identity operations require an out-of-band approval workflow."
+
+# =============================================================================
+# Tier dispatch policy
+# =============================================================================
+policy:
+  # Global kill switch. When true, NOTHING dispatches — every action, including
+  # COLLECT, is recorded as would_have_executed. Start here on day one.
+  dry_run: false
+
+  tiers:
+    COLLECT:
+      auto_dispatch: true
+      max_per_case: 8           # bounds a runaway reasoning loop
+      max_concurrent: 3
+      require_confidence: 0.0
+    CONTAIN:
+      auto_dispatch: false
+      max_per_case: 3
+      # Below this confidence the action is not even offered for approval —
+      # it is recorded as a low-confidence proposal.
+      require_confidence: 0.75
+      approval_timeout_minutes: 60
+      on_timeout: expire        # expire | escalate
+    DENY:
+      auto_dispatch: false
+      record_only: true
+
+  # Even with auto_dispatch, refuse if the case's deep verdict is unavailable
+  # and triage confidence is below this.
+  min_triage_confidence_for_collect: 0.35

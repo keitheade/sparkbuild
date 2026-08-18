@@ -1,0 +1,171 @@
+# =============================================================================
+# SPARKSOC — agent harness (management VM)
+#
+#   harness  :8080  FastAPI orchestrator
+#   redis    :6379  dedupe keys, HMAC nonce replay cache
+#
+# IMPORTANT: the harness runs with a SINGLE uvicorn worker on purpose.
+# Case state, the queues, and pending approvals are in-process. Multiple
+# workers would each hold a partial view: an approval posted to worker 2 would
+# not find the case held by worker 1. If you need horizontal scale, the state
+# must move to Redis first — see docs/08-RUNBOOK.md.
+# =============================================================================
+
+services:
+
+  harness:
+    image: ${HARNESS_IMAGE:-sparksoc/harness:1.0.0}
+    container_name: sparksoc-harness
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDR:-0.0.0.0}:8080:8080"
+    environment:
+      SPARKSOC_ENV: ${SPARKSOC_ENV:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+      # ---- Spark 1 ----
+      TRIAGE_URL: ${TRIAGE_URL:?}
+      TRIAGE_MODEL: ${TRIAGE_MODEL:-soc-triage}
+      TRIAGE_CONCURRENCY: ${TRIAGE_CONCURRENCY:-8}
+      TRIAGE_TIMEOUT: ${TRIAGE_TIMEOUT:-120}
+      EMBED_URL: ${EMBED_URL:?}
+      EMBED_MODEL: ${EMBED_MODEL:-soc-embed}
+
+      # ---- Spark 2 ----
+      REASON_URL: ${REASON_URL:?}
+      REASON_MODEL: ${REASON_MODEL:-soc-reason}
+      REASON_CONCURRENCY: ${REASON_CONCURRENCY:-2}
+      REASON_TIMEOUT: ${REASON_TIMEOUT:-900}
+
+      # ---- Qdrant ----
+      QDRANT_URL: ${QDRANT_URL:?}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-attack_enterprise}
+      RAG_TOP_K: ${RAG_TOP_K:-12}
+      RAG_TECHNIQUES: ${RAG_TECHNIQUES:-8}
+      ATTACK_KEYWORD_INDEX: /opt/sparksoc/attack/attack_keyword_index.json
+
+      # ---- SOAR ----
+      SOAR_URL: ${SOAR_URL:?}
+      SOAR_CA_BUNDLE: ${SOAR_CA_BUNDLE:-/etc/sparksoc/soar-ca.pem}
+      SOAR_LABEL: ${SOAR_LABEL:-events}
+      SOAR_TIMEOUT: ${SOAR_TIMEOUT:-60}
+      SOAR_POLL_TIMEOUT: ${SOAR_POLL_TIMEOUT:-300}
+
+      # ---- Pipeline ----
+      WORKERS: ${WORKERS:-6}
+      DEEP_WORKERS: ${DEEP_WORKERS:-2}
+      QUEUE_MAX_SIZE: ${QUEUE_MAX_SIZE:-512}
+      DEEP_QUEUE_MAX_SIZE: ${DEEP_QUEUE_MAX_SIZE:-128}
+      DEEP_THRESHOLD: ${DEEP_THRESHOLD:-0.45}
+      DEEP_MAX_TURNS: ${DEEP_MAX_TURNS:-6}
+      CASE_RETENTION_HOURS: ${CASE_RETENTION_HOURS:-168}
+      DEDUPE_TTL_SECONDS: ${DEDUPE_TTL_SECONDS:-900}
+
+      # ---- Auth ----
+      HMAC_WINDOW_SECONDS: ${HMAC_WINDOW_SECONDS:-300}
+      ALLOWED_SOURCE_IPS: ${ALLOWED_SOURCE_IPS:-}
+
+      # ---- Actions ----
+      ACTION_ALLOWLIST: /opt/sparksoc/common/action_allowlist.yaml
+      FORCE_DRY_RUN: ${FORCE_DRY_RUN:-false}
+
+      # ---- Paths ----
+      STATE_DIR: /var/lib/sparksoc
+      AUDIT_PATH: /var/lib/sparksoc/audit/audit.jsonl
+      REDIS_URL: redis://redis:6379/0
+
+      # ---- Secrets read from files, never baked into the image ----
+      SPARK1_API_KEY_FILE: /run/secrets/spark1_api_key
+      SPARK2_API_KEY_FILE: /run/secrets/spark2_api_key
+      QDRANT_API_KEY_FILE: /run/secrets/qdrant_api_key
+      SOAR_AUTH_TOKEN_FILE: /run/secrets/soar_token
+      SPLUNK_HMAC_SECRET_FILE: /run/secrets/splunk_hmac_secret
+      WEBHOOK_FALLBACK_TOKEN: ${WEBHOOK_FALLBACK_TOKEN:-}
+
+    secrets:
+      - spark1_api_key
+      - spark2_api_key
+      - qdrant_api_key
+      - soar_token
+      - splunk_hmac_secret
+
+    volumes:
+      # Audit log and exercise state must survive container replacement.
+      - harness-state:/var/lib/sparksoc
+      # The allowlist is bind-mounted read-only so it can be reviewed and
+      # changed under version control without rebuilding the image.
+      - ../common/action_allowlist.yaml:/opt/sparksoc/common/action_allowlist.yaml:ro
+      # ATT&CK keyword fallback index, copied from the Spark 1 bundle.
+      - ./attack:/opt/sparksoc/attack:ro
+      # Must EXIST before first start — Docker creates a directory for a missing
+      # bind-mount source, which breaks TLS verification confusingly.
+      # See certs/README.md. For plain HTTP set SOAR_CA_HOST_PATH=/dev/null.
+      - ${SOAR_CA_HOST_PATH:-./certs/soar-ca.pem}:/etc/sparksoc/soar-ca.pem:ro
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=4).status==200 else 1)\""]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 30s
+
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    cap_drop:
+      - ALL
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7.4-alpine}
+    container_name: sparksoc-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly no
+      --save ""
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+secrets:
+  spark1_api_key:
+    file: ./secrets/spark1_api_key
+  spark2_api_key:
+    file: ./secrets/spark2_api_key
+  qdrant_api_key:
+    file: ./secrets/qdrant_api_key
+  soar_token:
+    file: ./secrets/soar_token
+  splunk_hmac_secret:
+    file: ./secrets/splunk_hmac_secret
+
+volumes:
+  harness-state:
+    driver: local
+
+networks:
+  default:
+    name: sparksoc

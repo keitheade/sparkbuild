@@ -1,0 +1,29 @@
+[Unit]
+Description=SPARKSOC Spark 2 (deep reasoning, gpt-oss-120b)
+Documentation=file:///opt/sparksoc/code/docs/03-SPARK2-DEPLOY.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/sparksoc/code/spark2
+EnvironmentFile=/opt/sparksoc/code/spark2/.env
+
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+ExecStartPost=/opt/sparksoc/code/spark2/init.sh
+ExecStop=/usr/bin/docker compose stop
+ExecReload=/usr/bin/docker compose up -d --force-recreate
+
+# 63 GB of weights plus JIT. A cold start of 20+ minutes is normal.
+TimeoutStartSec=2700
+TimeoutStopSec=180
+Restart=on-failure
+RestartSec=120
+
+StandardOutput=append:/opt/sparksoc/logs/spark2.service.log
+StandardError=append:/opt/sparksoc/logs/spark2.service.log
+
+[Install]
+WantedBy=multi-user.target

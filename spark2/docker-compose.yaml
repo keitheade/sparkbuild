@@ -1,0 +1,105 @@
+# =============================================================================
+# SPARKSOC — DGX Spark 2 (DEEP PATH: attack hypothesis validation, reasoning)
+#
+#   vllm-reason  :8003  gpt-oss-120b (MXFP4 MoE)
+#
+# Sole workload on this node. ~63 GB of MXFP4 weights plus KV cache for a
+# 128K context.
+#
+# CRITICAL — vLLM #37030
+#   gpt-oss at TP=1 on SM121 has a documented shared-memory race in the Marlin
+#   MoE 256-thread kernel that produces a NULL first Harmony token. The symptom
+#   is HTTP 200 with empty `content`, which passes every naive health check.
+#   init.sh asserts non-empty content. Mitigation toggles are in .env.example.
+#
+# Cross-node tensor parallelism is NOT configured. TP=2 across two Sparks
+# requires a ConnectX-7 direct link; this enclave has 1 GbE only.
+# =============================================================================
+
+services:
+
+  vllm-reason:
+    image: ${VLLM_IMAGE:?set VLLM_IMAGE in .env}
+    container_name: sparksoc-vllm-reason
+    runtime: nvidia
+    ipc: host
+    restart: unless-stopped
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    volumes:
+      - ${MODEL_ROOT:?}/${REASON_MODEL_DIR:?}:/model:ro
+      - vllm-reason-cache:/root/.cache/vllm
+    ports:
+      - "${BIND_ADDR:-0.0.0.0}:8003:8000"
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+
+      # ---- airgap hygiene ----
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_DATASETS_OFFLINE: "1"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      VLLM_DO_NOT_TRACK: "1"
+
+      # ---- allocator ----
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+      VLLM_LOGGING_LEVEL: ${VLLM_LOG_LEVEL:-INFO}
+
+      # ---- sm_121 / MXFP4 MoE escape hatches (see .env.example) ----
+      VLLM_USE_FLASHINFER_MOE_MXFP4_BF16: ${VLLM_USE_FLASHINFER_MOE_MXFP4_BF16:-0}
+      VLLM_ATTENTION_BACKEND: ${VLLM_ATTENTION_BACKEND:-}
+      VLLM_MARLIN_USE_ATOMIC_ADD: ${VLLM_MARLIN_USE_ATOMIC_ADD:-0}
+
+    command: >
+      --model /model
+      --served-model-name soc-reason
+      --port 8000
+      --host 0.0.0.0
+      ${REASON_QUANT_ARGS:---quantization mxfp4}
+      --tensor-parallel-size 1
+      --gpu-memory-utilization ${GPU_UTIL_REASON:-0.88}
+      --max-model-len ${REASON_MAX_LEN:-131072}
+      --max-num-seqs ${REASON_MAX_SEQS:-4}
+      --kv-cache-dtype ${REASON_KV_DTYPE:-fp8}
+      --enable-prefix-caching
+      --enable-chunked-prefill
+      --load-format ${REASON_LOAD_FORMAT:-fastsafetensors}
+      ${REASON_PARSER_ARGS:---reasoning-parser openai_gptoss}
+      ${REASON_TOOL_ARGS:---enable-auto-tool-choice --tool-call-parser openai}
+      --disable-log-requests
+      --api-key ${VLLM_API_KEY:?set VLLM_API_KEY in .env}
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # 63 GB of weights over fastsafetensors plus JIT. Do not shorten this.
+      start_period: 1800s
+
+    stop_grace_period: 120s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+volumes:
+  vllm-reason-cache:
+    driver: local
+
+networks:
+  default:
+    name: sparksoc

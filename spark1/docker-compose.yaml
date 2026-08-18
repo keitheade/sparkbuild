@@ -1,0 +1,171 @@
+# =============================================================================
+# SPARKSOC — DGX Spark 1 (FAST PATH: triage, feature extraction, ATT&CK RAG)
+#
+#   vllm-triage   :8001  Qwen3.5-35B-A3B   structured triage + feature extraction
+#   vllm-embed    :8002  Qwen3-Embedding-0.6B   RAG embeddings (replaces TEI —
+#                        HF TEI has no Blackwell support, issue #652)
+#   qdrant        :6333  MITRE ATT&CK vector store
+#
+# Airgap notes:
+#   - No image has a pull policy that would reach a registry. Images must be
+#     `docker load`-ed by load-bundle.sh first.
+#   - Telemetry is disabled at the container level. In an airgap these calls
+#     do not leak, but they do add multi-second startup stalls on DNS timeout.
+#
+# Memory: the two vLLM services reserve independent fractions of the SAME
+# unified 128 GB pool. GPU_UTIL_TRIAGE + GPU_UTIL_EMBED must stay <= 0.80.
+# init.sh enforces this. See docs/00-ARCHITECTURE.md section 2.
+# =============================================================================
+
+x-vllm-common: &vllm-common
+  image: ${VLLM_IMAGE:?set VLLM_IMAGE in .env}
+  runtime: nvidia
+  ipc: host
+  restart: unless-stopped
+  ulimits:
+    memlock: -1
+    stack: 67108864
+  environment: &vllm-env
+    NVIDIA_VISIBLE_DEVICES: all
+    NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    # ---- airgap hygiene: never attempt egress ----
+    HF_HUB_OFFLINE: "1"
+    TRANSFORMERS_OFFLINE: "1"
+    HF_DATASETS_OFFLINE: "1"
+    VLLM_NO_USAGE_STATS: "1"
+    DO_NOT_TRACK: "1"
+    VLLM_DO_NOT_TRACK: "1"
+    # ---- allocator behaviour on unified memory ----
+    PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+    VLLM_LOGGING_LEVEL: ${VLLM_LOG_LEVEL:-INFO}
+    # ---- sm_121 escape hatches (see .env.example) ----
+    VLLM_USE_FLASHINFER_MOE_MXFP4_BF16: ${VLLM_USE_FLASHINFER_MOE_MXFP4_BF16:-0}
+    VLLM_ATTENTION_BACKEND: ${VLLM_ATTENTION_BACKEND:-}
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+  logging:
+    driver: json-file
+    options:
+      max-size: "50m"
+      max-file: "5"
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Triage / feature extraction model
+  # ---------------------------------------------------------------------------
+  vllm-triage:
+    <<: *vllm-common
+    container_name: sparksoc-vllm-triage
+    volumes:
+      - ${MODEL_ROOT:?}/${TRIAGE_MODEL_DIR:?}:/model:ro
+      - vllm-triage-cache:/root/.cache/vllm      # torch.compile / CUDA graph cache
+    ports:
+      - "${BIND_ADDR:-0.0.0.0}:8001:8000"
+    command: >
+      --model /model
+      --served-model-name soc-triage
+      --port 8000
+      --host 0.0.0.0
+      ${TRIAGE_QUANT_ARGS:---quantization mxfp4}
+      --tensor-parallel-size 1
+      --gpu-memory-utilization ${GPU_UTIL_TRIAGE:-0.62}
+      --max-model-len ${TRIAGE_MAX_LEN:-32768}
+      --max-num-seqs ${TRIAGE_MAX_SEQS:-16}
+      --kv-cache-dtype ${TRIAGE_KV_DTYPE:-fp8}
+      --enable-prefix-caching
+      --enable-chunked-prefill
+      --load-format ${TRIAGE_LOAD_FORMAT:-fastsafetensors}
+      --disable-log-requests
+      --api-key ${VLLM_API_KEY:?set VLLM_API_KEY in .env}
+    healthcheck:
+      # /health alone is not sufficient — it returns 200 before the model can
+      # actually generate. init.sh does the generative check.
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 900s        # cold start includes JIT + fastsafetensors load
+    stop_grace_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # Embedding model (TEI replacement)
+  # ---------------------------------------------------------------------------
+  vllm-embed:
+    <<: *vllm-common
+    container_name: sparksoc-vllm-embed
+    volumes:
+      - ${MODEL_ROOT:?}/${EMBED_MODEL_DIR:?}:/model:ro
+      - vllm-embed-cache:/root/.cache/vllm
+    ports:
+      - "${BIND_ADDR:-0.0.0.0}:8002:8000"
+    command: >
+      --model /model
+      --served-model-name soc-embed
+      --port 8000
+      --host 0.0.0.0
+      --runner pooling
+      --tensor-parallel-size 1
+      --gpu-memory-utilization ${GPU_UTIL_EMBED:-0.04}
+      --max-model-len ${EMBED_MAX_LEN:-8192}
+      --max-num-seqs ${EMBED_MAX_SEQS:-32}
+      --disable-log-requests
+      --api-key ${VLLM_API_KEY:?}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    stop_grace_period: 30s
+    depends_on:
+      # Start after triage so the larger allocation lands first and we fail
+      # fast on OOM rather than fragmenting the pool.
+      vllm-triage:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Vector store
+  # ---------------------------------------------------------------------------
+  qdrant:
+    image: ${QDRANT_IMAGE:?set QDRANT_IMAGE in .env}
+    container_name: sparksoc-qdrant
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDR:-0.0.0.0}:6333:6333"
+      - "${BIND_ADDR:-0.0.0.0}:6334:6334"
+    volumes:
+      - qdrant-storage:/qdrant/storage
+      - ./qdrant-config.yaml:/qdrant/config/production.yaml:ro
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:?set QDRANT_API_KEY in .env}
+      QDRANT__TELEMETRY_DISABLED: "true"
+      QDRANT__LOG_LEVEL: INFO
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+volumes:
+  qdrant-storage:
+    driver: local
+  vllm-triage-cache:
+    driver: local
+  vllm-embed-cache:
+    driver: local
+
+networks:
+  default:
+    name: sparksoc

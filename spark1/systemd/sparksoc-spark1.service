@@ -1,0 +1,31 @@
+[Unit]
+Description=SPARKSOC Spark 1 (triage, embeddings, Qdrant)
+Documentation=file:///opt/sparksoc/code/docs/02-SPARK1-DEPLOY.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/sparksoc/code/spark1
+EnvironmentFile=/opt/sparksoc/code/spark1/.env
+
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+# init.sh is idempotent: it waits for readiness, runs the generative check,
+# pre-warms, and ingests ATT&CK only if the collection is missing.
+ExecStartPost=/opt/sparksoc/code/spark1/init.sh
+ExecStop=/usr/bin/docker compose stop
+ExecReload=/usr/bin/docker compose up -d --force-recreate
+
+# Model load + JIT can legitimately take 15 minutes on a cold boot.
+TimeoutStartSec=1800
+TimeoutStopSec=180
+Restart=on-failure
+RestartSec=60
+
+StandardOutput=append:/opt/sparksoc/logs/spark1.service.log
+StandardError=append:/opt/sparksoc/logs/spark1.service.log
+
+[Install]
+WantedBy=multi-user.target

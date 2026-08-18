@@ -1,0 +1,46 @@
+# ---- secrets: never commit ----
+harness/.env
+harness/secrets/*
+!harness/secrets/README.md
+harness/certs/*.pem
+harness/certs/*.key
+!harness/certs/README.md
+spark1/.env
+spark2/.env
+validate/config.yaml
+
+# ---- operator-populated at deploy time ----
+harness/attack/*
+!harness/attack/.gitkeep
+spark1/venv/
+validate/venv/
+
+# ---- staging artifacts (never in git; they are 145 GB) ----
+staging/work/
+*.tar
+*.tar.gz
+*.part[0-9][0-9][0-9]
+MANIFEST.json
+MANIFEST.txt
+
+# ---- reports and logs ----
+*.log
+validation-*.json
+baseline-*.json
+replay-*.html
+replay-*.json
+exercise-report.*
+
+# ---- python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# ---- editors / os ----
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
