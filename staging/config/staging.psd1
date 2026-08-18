@@ -7,11 +7,11 @@
     BundleVersion = '1.0.0'
 
     # Where large intermediates are built. Needs ~400 GB free.
-    WorkRoot      = 'D:\sparksoc-staging'
+    WorkRoot      = 'C:\tmp\sparksoc-staging'
 
     # USB target. MUST be exFAT or NTFS — FAT32 cannot hold >4 GB files.
     # Bundles are split at 3.8 GB regardless, for resumable transfer.
-    UsbRoot       = 'E:\sparksoc'
+    UsbRoot       = 'D:\WRITEBLOCK'
 
     TargetPlatform = 'linux/arm64'
 
